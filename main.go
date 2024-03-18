@@ -144,6 +144,7 @@ func answerQuestion(question string) string {
 	return strings.Trim(text, " \n")
 }
 
+// Execute the request either with the older apikey or the private app access key
 func executeRequest(hubspotConfig *HubspotConfig, url string) (*http.Response, error) {
 	// Create a new GET request
 	if !hubspotConfig.PrivateApp {
