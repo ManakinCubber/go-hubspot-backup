@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
@@ -39,21 +40,34 @@ type HubspotAccount struct {
 	UtcOffset             string `json:"utcOffset"`
 }
 
+type HubspotConfig struct {
+	Hapikey    string `json: hapiKey`
+	PrivateApp bool   `json: privateApp`
+}
+
 type Error struct {
 	Message string `json:"message"`
 }
 
-func getHapikey() string {
+func getHapikey() *HubspotConfig {
 	var hapikey string
+	privateApp := true
+
 	// command line flags
 	flag_hapikey := flag.String("hapikey", "", "Hubspot API key")
+	flag_accesskey := flag.String("accesskey", "", "Hubspot API access key")
 	flag.Parse()
-
 	// if hapikey in arguments, use it, else use env variable
 	if *flag_hapikey != "" {
 		hapikey = *flag_hapikey
+		privateApp = false
 	} else if os.Getenv("HAPIKEY") != "" {
 		hapikey = os.Getenv("HAPIKEY")
+		privateApp = false
+	} else if *flag_accesskey != "" {
+		hapikey = *flag_accesskey
+	} else if os.Getenv("HAPI_ACCESS_KEY") != "" {
+		hapikey = os.Getenv("HAPI_ACCESS_KEY")
 	} else {
 		// ask user for hapikey
 		switch runtime.GOOS {
@@ -69,7 +83,12 @@ func getHapikey() string {
 		// TODO: save new hapikey to config.yml file
 	}
 
-	return hapikey
+	hubspotConfig := &HubspotConfig{
+		Hapikey:    hapikey,
+		PrivateApp: privateApp,
+	}
+
+	return hubspotConfig
 }
 
 func getAccountInfo(hapikey string) bool {
@@ -125,34 +144,68 @@ func answerQuestion(question string) string {
 	return strings.Trim(text, " \n")
 }
 
-func startBackup(hapikey string) {
+// Execute the request either with the older apikey or the private app access key
+func executeRequest(hubspotConfig *HubspotConfig, url string) (*http.Response, error) {
+	// Create a new GET request
+	if !hubspotConfig.PrivateApp {
+		url += "&hapikey=" + hubspotConfig.Hapikey
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
+		return nil, err
+	}
+
+	if hubspotConfig.PrivateApp {
+		req.Header.Set("Authorization", "Bearer "+hubspotConfig.Hapikey)
+	}
+
+	// Create an HTTP client
+	client := &http.Client{}
+
+	// Send the request using the client
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error making request: %v\n", err)
+		return resp, err
+	}
+
+	return resp, nil
+}
+
+func startBackup(hapikey *HubspotConfig) {
+	var wg sync.WaitGroup
+
 	switch runtime.GOOS {
 	case "windows":
 		color.Yellow("\033[32;1mBacking up your Hubspot account...\033[0m \n")
 	default:
 		fmt.Printf("\033[32;1mBacking up your Hubspot account...\033[0m \n")
 	}
+
 	// https://www.sohamkamani.com/blog/2017/10/18/parsing-json-in-golang/#unstructured-data-decoding-json-to-maps
 	// https://astaxie.gitbooks.io/build-web-application-with-golang/en/07.2.html
+	wg.Add(16)
+	go backupHasMore(hapikey, "https://api.hubapi.com/contacts/v1/lists", "lists", 0, &wg)
+	go backupOnce(hapikey, "https://api.hubapi.com/content/api/v2/blogs", "blogs", 0, &wg)
+	go backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/blog-posts", "blog-posts", 0, &wg)
+	go backupLimit(hapikey, "https://api.hubapi.com/blogs/v3/blog-authors", "blog-authors", 0, &wg)
+	go backupLimit(hapikey, "https://api.hubapi.com/blogs/v3/topics", "blog-topics", 0, &wg)
+	go backupLimit(hapikey, "https://api.hubapi.com/comments/v3/comments", "blog-comments", 0, &wg)
+	go backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/layouts", "layouts", 0, &wg)
+	go backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/pages", "pages", 0, &wg)
+	go backupOnce(hapikey, "https://api.hubapi.com/hubdb/api/v2/tables", "hubdb-tables", 0, &wg)
+	go backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/templates", "templates", 0, &wg)
+	go backupLimit(hapikey, "https://api.hubapi.com/url-mappings/v3/url-mappings", "url-mappings", 0, &wg)
+	go backupHasMore(hapikey, "https://api.hubapi.com/deals/v1/deal/paged", "deals", 0, &wg)
+	go backupLimit(hapikey, "https://api.hubapi.com/marketing-emails/v1/emails", "marketing-emails", 0, &wg)
+	go backupOnce(hapikey, "https://api.hubapi.com/automation/v3/workflows", "workflows", 0, &wg)
+	go backupHasMore(hapikey, "https://api.hubapi.com/companies/v2/companies/paged", "companies", 0, &wg)
+	go backupContacts(hapikey, "https://api.hubapi.com/contacts/v1/lists/all/contacts/all", "contacts", 0, &wg)
+	//go backupLimit(hapikey, "https://api.hubapi.com/forms/v2/forms", "forms", 0, &wg) // TODO: typeArray in results, without nesting
 
-	backupHasMore(hapikey, "https://api.hubapi.com/contacts/v1/lists", "lists", 0)
-	backupOnce(hapikey, "https://api.hubapi.com/content/api/v2/blogs", "blogs", 0)
-	backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/blog-posts", "blog-posts", 0)
-	backupLimit(hapikey, "https://api.hubapi.com/blogs/v3/blog-authors", "blog-authors", 0)
-	backupLimit(hapikey, "https://api.hubapi.com/blogs/v3/topics", "blog-topics", 0)
-	backupLimit(hapikey, "https://api.hubapi.com/comments/v3/comments", "blog-comments", 0)
-	backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/layouts", "layouts", 0)
-	backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/pages", "pages", 0)
-	backupOnce(hapikey, "https://api.hubapi.com/hubdb/api/v2/tables", "hubdb-tables", 0)
-	backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/templates", "templates", 0)
-	backupLimit(hapikey, "https://api.hubapi.com/url-mappings/v3/url-mappings", "url-mappings", 0)
-	backupHasMore(hapikey, "https://api.hubapi.com/deals/v1/deal/paged", "deals", 0)
-	backupLimit(hapikey, "https://api.hubapi.com/marketing-emails/v1/emails", "marketing-emails", 0)
-	backupOnce(hapikey, "https://api.hubapi.com/automation/v3/workflows", "workflows", 0)
-	backupHasMore(hapikey, "https://api.hubapi.com/companies/v2/companies/paged", "companies", 0)
-	backupContacts(hapikey, "https://api.hubapi.com/contacts/v1/lists/all/contacts/all", "contacts", 0)
-	// backupLimit(hapikey, "https://api.hubapi.com/forms/v2/forms", "forms", 0) // TODO: typeArray in results, without nesting
-
+	wg.Wait()
 	ex, err := os.Executable()
 	if err != nil {
 		panic(err)
@@ -168,12 +221,13 @@ func startBackup(hapikey string) {
 	return
 }
 
-func backupHasMore(hapikey string, url string, endpoint string, offset float64) {
+func backupHasMore(hubspotConfig *HubspotConfig, url string, endpoint string, offset float64, wg *sync.WaitGroup) {
+	defer wg.Done()
 	var error Error
 	var results map[string]interface{}
 
 	// get data from API
-	resp, err := http.Get(strings.TrimSpace(url + "?count=250&offset=" + strconv.Itoa(int(offset)) + "&hapikey=" + hapikey))
+	resp, err := executeRequest(hubspotConfig, strings.TrimSpace(url+"?count=250&offset="+strconv.Itoa(int(offset))))
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -253,7 +307,8 @@ func backupHasMore(hapikey string, url string, endpoint string, offset float64) 
 		has_more := results["has-more"]
 		if has_more != false {
 			new_offset := results["offset"]
-			backupHasMore(hapikey, url, endpoint, new_offset.(float64))
+			wg.Add(1)
+			go backupHasMore(hubspotConfig, url, endpoint, new_offset.(float64), wg)
 		} else {
 			switch runtime.GOOS {
 			case "windows":
@@ -266,12 +321,13 @@ func backupHasMore(hapikey string, url string, endpoint string, offset float64) 
 	return
 }
 
-func backupOnce(hapikey string, url string, endpoint string, offset float64) {
+func backupOnce(hubspotConfig *HubspotConfig, url string, endpoint string, offset float64, wg *sync.WaitGroup) {
+	defer wg.Done()
 	var error Error
 	var results map[string]interface{}
 
 	// get data from API
-	resp, err := http.Get(strings.TrimSpace(url + "?count=250&offset=" + strconv.Itoa(int(offset)) + "&hapikey=" + hapikey))
+	resp, err := executeRequest(hubspotConfig, strings.TrimSpace(url+"?count=250&offset="+strconv.Itoa(int(offset))))
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -362,12 +418,13 @@ func backupOnce(hapikey string, url string, endpoint string, offset float64) {
 	return
 }
 
-func backupLimit(hapikey string, url string, endpoint string, offset float64) {
+func backupLimit(hubspotConfig *HubspotConfig, url string, endpoint string, offset float64, wg *sync.WaitGroup) {
+	defer wg.Done()
 	var error Error
 	var results map[string]interface{}
 
 	// get data from API
-	resp, err := http.Get(strings.TrimSpace(url + "?limit=250&offset=" + strconv.Itoa(int(offset)) + "&hapikey=" + hapikey))
+	resp, err := executeRequest(hubspotConfig, strings.TrimSpace(url+"?count=250&offset="+strconv.Itoa(int(offset))))
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -460,18 +517,20 @@ func backupLimit(hapikey string, url string, endpoint string, offset float64) {
 				fmt.Printf("\r\033[33;1mBacking up %v: %v\033[0m", endpoint, len(typeArray)+int(offset))
 			}
 			// run again to save next batch
-			backupLimit(hapikey, url, endpoint, float64(len(typeArray))+offset)
+			wg.Add(1)
+			go backupLimit(hubspotConfig, url, endpoint, float64(len(typeArray))+offset, wg)
 		}
 	}
 	return
 }
 
-func backupContacts(hapikey string, url string, endpoint string, offset float64) {
+func backupContacts(hubspotConfig *HubspotConfig, url string, endpoint string, offset float64, wg *sync.WaitGroup) {
+	defer wg.Done()
 	var error Error
 	var results map[string]interface{}
 
 	// get data from API
-	resp, err := http.Get(strings.TrimSpace(url + "?count=100&vidOffset=" + strconv.Itoa(int(offset)) + "&hapikey=" + hapikey))
+	resp, err := executeRequest(hubspotConfig, strings.TrimSpace(url+"?count=100&vidOffset="+strconv.Itoa(int(offset))))
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -552,7 +611,7 @@ func backupContacts(hapikey string, url string, endpoint string, offset float64)
 		if has_more != false {
 			new_offset := results["vid-offset"]
 			time.Sleep(1 * time.Second)
-			backupContacts(hapikey, url, endpoint, new_offset.(float64))
+			go backupContacts(hubspotConfig, url, endpoint, new_offset.(float64), wg)
 		} else {
 			switch runtime.GOOS {
 			case "windows":
