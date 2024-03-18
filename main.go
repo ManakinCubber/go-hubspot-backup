@@ -60,13 +60,13 @@ func getHapikey() *HubspotConfig {
 	// if hapikey in arguments, use it, else use env variable
 	if *flag_hapikey != "" {
 		hapikey = *flag_hapikey
+		privateApp = false
 	} else if os.Getenv("HAPIKEY") != "" {
 		hapikey = os.Getenv("HAPIKEY")
+		privateApp = false
 	} else if *flag_accesskey != "" {
-		privateApp = true
 		hapikey = *flag_accesskey
 	} else if os.Getenv("HAPI_ACCESS_KEY") != "" {
-		privateApp = true
 		hapikey = os.Getenv("HAPI_ACCESS_KEY")
 	} else {
 		// ask user for hapikey
