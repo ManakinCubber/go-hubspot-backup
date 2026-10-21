@@ -91,6 +91,8 @@ func getHapikey() string {
 		hapikey = *flag_hapikey
 	} else if os.Getenv("HAPIKEY") != "" {
 		hapikey = os.Getenv("HAPIKEY")
+	} else if os.Getenv("HAPI_ACCESS_KEY") != "" {
+		hapikey = os.Getenv("HAPI_ACCESS_KEY")
 	} else if isDocker() == true && os.Getenv("HAPIKEY") == "" {
 		fmt.Println("\033[31;1mError: No HAPIKEY present\033[0m")
 		os.Exit(1)
@@ -725,6 +727,7 @@ func backupContacts(hapikey string, url string, endpoint string, offset float64)
 		has_more := results["has-more"]
 		if has_more != false {
 			new_offset := results["vid-offset"]
+			time.Sleep(1 * time.Second)
 			backupContacts(hapikey, url, endpoint, new_offset.(float64))
 		} else {
 			switch runtime.GOOS {
