@@ -13,15 +13,23 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fatih/color"
 )
 
+var failed atomic.Bool
+
 func main() {
 	hapikey := getHapikey()
 
 	startBackup(hapikey)
+
+	if failed.Load() {
+		fmt.Printf("\033[31;1mHUBSPOT BACKUP INCOMPLETE\033[0m\n")
+		os.Exit(1)
+	}
 
 	switch runtime.GOOS {
 	case "windows":
@@ -164,14 +172,20 @@ func executeRequest(hubspotConfig *HubspotConfig, url string) (*http.Response, e
 	// Create an HTTP client
 	client := &http.Client{}
 
-	// Send the request using the client
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error making request: %v\n", err)
-		return resp, err
+	// HubSpot rate limits private apps per 10s window: wait and retry instead of
+	// silently dropping the rest of the endpoint.
+	for attempt := 0; ; attempt++ {
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error making request: %v\n", err)
+			return resp, err
+		}
+		if resp.StatusCode != http.StatusTooManyRequests || attempt >= 10 {
+			return resp, nil
+		}
+		resp.Body.Close()
+		time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
 	}
-
-	return resp, nil
 }
 
 func startBackup(hapikey *HubspotConfig) {
@@ -186,7 +200,7 @@ func startBackup(hapikey *HubspotConfig) {
 
 	// https://www.sohamkamani.com/blog/2017/10/18/parsing-json-in-golang/#unstructured-data-decoding-json-to-maps
 	// https://astaxie.gitbooks.io/build-web-application-with-golang/en/07.2.html
-	wg.Add(16)
+	wg.Add(15)
 	go backupHasMore(hapikey, "https://api.hubapi.com/contacts/v1/lists", "lists", 0, &wg)
 	go backupOnce(hapikey, "https://api.hubapi.com/content/api/v2/blogs", "blogs", 0, &wg)
 	go backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/blog-posts", "blog-posts", 0, &wg)
@@ -199,7 +213,6 @@ func startBackup(hapikey *HubspotConfig) {
 	go backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/templates", "templates", 0, &wg)
 	go backupLimit(hapikey, "https://api.hubapi.com/url-mappings/v3/url-mappings", "url-mappings", 0, &wg)
 	go backupHasMore(hapikey, "https://api.hubapi.com/deals/v1/deal/paged", "deals", 0, &wg)
-	go backupLimit(hapikey, "https://api.hubapi.com/marketing-emails/v1/emails", "marketing-emails", 0, &wg)
 	go backupOnce(hapikey, "https://api.hubapi.com/automation/v3/workflows", "workflows", 0, &wg)
 	go backupHasMore(hapikey, "https://api.hubapi.com/companies/v2/companies/paged", "companies", 0, &wg)
 	go backupContacts(hapikey, "https://api.hubapi.com/contacts/v1/lists/all/contacts/all", "contacts", 0, &wg)
@@ -236,9 +249,10 @@ func backupHasMore(hubspotConfig *HubspotConfig, url string, endpoint string, of
 
 	if resp.StatusCode > 299 {
 		// if error
-		fmt.Printf("\033[31;1mError: %v %v \033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode))
+		fmt.Printf("\033[31;1mError: %v %v on %v\033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode), endpoint)
 		err = json.Unmarshal(body, &error)
 		fmt.Println(error.Message)
+		failed.Store(true)
 
 		return
 	} else {
@@ -336,9 +350,10 @@ func backupOnce(hubspotConfig *HubspotConfig, url string, endpoint string, offse
 
 	if resp.StatusCode > 299 {
 		// if error
-		fmt.Printf("\033[31;1mError: %v %v \033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode))
+		fmt.Printf("\033[31;1mError: %v %v on %v\033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode), endpoint)
 		err = json.Unmarshal(body, &error)
 		fmt.Println(error.Message)
+		failed.Store(true)
 
 		return
 	} else {
@@ -433,9 +448,10 @@ func backupLimit(hubspotConfig *HubspotConfig, url string, endpoint string, offs
 
 	if resp.StatusCode > 299 {
 		// if error
-		fmt.Printf("\033[31;1mError: %v %v \033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode))
+		fmt.Printf("\033[31;1mError: %v %v on %v\033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode), endpoint)
 		err = json.Unmarshal(body, &error)
 		fmt.Println(error.Message)
+		failed.Store(true)
 
 		return
 	} else {
@@ -539,9 +555,10 @@ func backupContacts(hubspotConfig *HubspotConfig, url string, endpoint string, o
 
 	if resp.StatusCode > 299 {
 		// if error
-		fmt.Printf("\033[31;1mError: %v %v \033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode))
+		fmt.Printf("\033[31;1mError: %v %v on %v\033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode), endpoint)
 		err = json.Unmarshal(body, &error)
 		fmt.Println(error.Message)
+		failed.Store(true)
 
 		return
 	} else {
@@ -611,6 +628,7 @@ func backupContacts(hubspotConfig *HubspotConfig, url string, endpoint string, o
 		if has_more != false {
 			new_offset := results["vid-offset"]
 			time.Sleep(1 * time.Second)
+			wg.Add(1)
 			go backupContacts(hubspotConfig, url, endpoint, new_offset.(float64), wg)
 		} else {
 			switch runtime.GOOS {
