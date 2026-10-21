@@ -2,17 +2,17 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/fatih/color"
@@ -21,13 +21,31 @@ import (
 func main() {
 	hapikey := getHapikey()
 
-	startBackup(hapikey)
+	if isDocker() == true {
+		startBackup(hapikey)
+	} else {
+		// give user a chance to change Hubspot account
+		if getAccountInfo(hapikey) == true {
+			key := answerQuestion("Press \033[32;1mENTER\033[0m to start backup\n")
+
+			// []byte{13} = "enter" key
+			if key == "" || bytes.Equal([]byte(key), []byte{13}) {
+				startBackup(hapikey)
+			} else if strings.ToLower(key) == "change" {
+				hapikey = answerQuestion("\033[33;1mPlease enter Hubspot API key: \033[0m")
+				getAccountInfo(hapikey)
+			}
+		}
+	}
 
 	switch runtime.GOOS {
 	case "windows":
 		color.Green("HUBSPOT BACKUP COMPLETE")
 	default:
 		fmt.Printf("\033[32;1mHUBSPOT BACKUP COMPLETE\033[0m\n")
+	}
+	if isDocker() == false {
+		answerQuestion("Press ENTER to close.")
 	}
 	return
 }
@@ -40,67 +58,72 @@ type HubspotAccount struct {
 	UtcOffset             string `json:"utcOffset"`
 }
 
-type HubspotConfig struct {
-	Hapikey    string `json: hapiKey`
-	PrivateApp bool   `json: privateApp`
-}
-
 type Error struct {
 	Message string `json:"message"`
 }
 
-func getHapikey() *HubspotConfig {
+func getHapikey() string {
 	var hapikey string
-	privateApp := true
-
 	// command line flags
 	flag_hapikey := flag.String("hapikey", "", "Hubspot API key")
-	flag_accesskey := flag.String("accesskey", "", "Hubspot API access key")
 	flag.Parse()
+
 	// if hapikey in arguments, use it, else use env variable
 	if *flag_hapikey != "" {
 		hapikey = *flag_hapikey
-		privateApp = false
 	} else if os.Getenv("HAPIKEY") != "" {
 		hapikey = os.Getenv("HAPIKEY")
-		privateApp = false
-	} else if *flag_accesskey != "" {
-		hapikey = *flag_accesskey
-	} else if os.Getenv("HAPI_ACCESS_KEY") != "" {
-		hapikey = os.Getenv("HAPI_ACCESS_KEY")
+	} else if isDocker() == true && os.Getenv("HAPIKEY") == "" {
+		fmt.Println("\033[31;1mError: No HAPIKEY present\033[0m")
+		os.Exit(1)
 	} else {
 		// ask user for hapikey
 		switch runtime.GOOS {
 		case "windows":
-			color.White("\033[33;1m Thank you for using Hubspot Data & Content Backup! For more information and help visit https://hubspot-backup.patrykkalinowski.com \033[0m \n")
-			color.Yellow("\033[33;1mThis app needs Hubspot API key to work. Learn how to get your API key here: https://knowledge.hubspot.com/Integrations/How-do-I-get-my-HubSpot-API-key \033[0m \n")
+			color.White("\033[33;1mThank you for using Hubspot Data & Content Backup! For more information and help visit https://github.com/patrykkalinowski/go-hubspot-backup \033[0m \n")
+			color.Yellow("\033[33;1mThis app needs Hubspot API key to work. Learn how to get your API key here: https://developers.hubspot.com/docs/guides/apps/private-apps/overview \033[0m \n")
 		default:
-			fmt.Printf("\033[97;1m Thank you for using Hubspot Data & Content Backup! For more information and help visit https://hubspot-backup.patrykkalinowski.com \033[0m \n")
-			fmt.Printf("\033[33;1mThis app needs Hubspot API key to work. Learn how to get your API key here: https://knowledge.hubspot.com/Integrations/How-do-I-get-my-HubSpot-API-key \033[0m \n")
+			fmt.Printf("\033[97;1mThank you for using Hubspot Data & Content Backup! For more information and help visit https://github.com/patrykkalinowski/go-hubspot-backup \033[0m \n")
+			fmt.Printf("\033[33;1mThis app needs Hubspot API key to work. Learn how to get your API key here: https://developers.hubspot.com/docs/guides/apps/private-apps/overview \033[0m \n")
 		}
 
 		hapikey = answerQuestion("\033[33;1mPlease enter Hubspot API key: \033[0m")
 		// TODO: save new hapikey to config.yml file
 	}
 
-	hubspotConfig := &HubspotConfig{
-		Hapikey:    hapikey,
-		PrivateApp: privateApp,
-	}
-
-	return hubspotConfig
+	return hapikey
 }
 
 func getAccountInfo(hapikey string) bool {
 	var hubspotAccount HubspotAccount
 	var error Error
+	// Create the Bearer
+	bearerToken := "Bearer " + strings.TrimSpace(hapikey)
 
-	// Windows CMD: https://stackoverflow.com/questions/55945325/golang-url-parse-always-return-invalid-control-character-url
-	resp, err := http.Get(strings.TrimSpace("https://api.hubapi.com/integrations/v1/me" + "?hapikey=" + hapikey))
+	// Create an HTTP client
+	client := &http.Client{}
+
+	// Create a request
+	req, err := http.NewRequest("GET", "https://api.hubapi.com/integrations/v1/me", nil)
+
 	if err != nil {
 		fmt.Println(err)
 	}
-	body, err := ioutil.ReadAll(resp.Body) // body as bytess
+
+	// Set the header
+	req.Header = http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {bearerToken},
+	}
+
+	// Send the request
+	resp, err := client.Do(req)
+
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	body, err := io.ReadAll(resp.Body) // body as bytess
 	resp.Body.Close()
 
 	if resp.StatusCode > 299 {
@@ -144,95 +167,83 @@ func answerQuestion(question string) string {
 	return strings.Trim(text, " \n")
 }
 
-// Execute the request either with the older apikey or the private app access key
-func executeRequest(hubspotConfig *HubspotConfig, url string) (*http.Response, error) {
-	// Create a new GET request
-	if !hubspotConfig.PrivateApp {
-		url += "&hapikey=" + hubspotConfig.Hapikey
-	}
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
-		return nil, err
-	}
-
-	if hubspotConfig.PrivateApp {
-		req.Header.Set("Authorization", "Bearer "+hubspotConfig.Hapikey)
-	}
-
-	// Create an HTTP client
-	client := &http.Client{}
-
-	// Send the request using the client
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error making request: %v\n", err)
-		return resp, err
-	}
-
-	return resp, nil
-}
-
-func startBackup(hapikey *HubspotConfig) {
-	var wg sync.WaitGroup
-
+func startBackup(hapikey string) {
 	switch runtime.GOOS {
 	case "windows":
 		color.Yellow("\033[32;1mBacking up your Hubspot account...\033[0m \n")
 	default:
 		fmt.Printf("\033[32;1mBacking up your Hubspot account...\033[0m \n")
 	}
-
 	// https://www.sohamkamani.com/blog/2017/10/18/parsing-json-in-golang/#unstructured-data-decoding-json-to-maps
 	// https://astaxie.gitbooks.io/build-web-application-with-golang/en/07.2.html
-	wg.Add(16)
-	go backupHasMore(hapikey, "https://api.hubapi.com/contacts/v1/lists", "lists", 0, &wg)
-	go backupOnce(hapikey, "https://api.hubapi.com/content/api/v2/blogs", "blogs", 0, &wg)
-	go backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/blog-posts", "blog-posts", 0, &wg)
-	go backupLimit(hapikey, "https://api.hubapi.com/blogs/v3/blog-authors", "blog-authors", 0, &wg)
-	go backupLimit(hapikey, "https://api.hubapi.com/blogs/v3/topics", "blog-topics", 0, &wg)
-	go backupLimit(hapikey, "https://api.hubapi.com/comments/v3/comments", "blog-comments", 0, &wg)
-	go backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/layouts", "layouts", 0, &wg)
-	go backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/pages", "pages", 0, &wg)
-	go backupOnce(hapikey, "https://api.hubapi.com/hubdb/api/v2/tables", "hubdb-tables", 0, &wg)
-	go backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/templates", "templates", 0, &wg)
-	go backupLimit(hapikey, "https://api.hubapi.com/url-mappings/v3/url-mappings", "url-mappings", 0, &wg)
-	go backupHasMore(hapikey, "https://api.hubapi.com/deals/v1/deal/paged", "deals", 0, &wg)
-	go backupLimit(hapikey, "https://api.hubapi.com/marketing-emails/v1/emails", "marketing-emails", 0, &wg)
-	go backupOnce(hapikey, "https://api.hubapi.com/automation/v3/workflows", "workflows", 0, &wg)
-	go backupHasMore(hapikey, "https://api.hubapi.com/companies/v2/companies/paged", "companies", 0, &wg)
-	go backupContacts(hapikey, "https://api.hubapi.com/contacts/v1/lists/all/contacts/all", "contacts", 0, &wg)
-	//go backupLimit(hapikey, "https://api.hubapi.com/forms/v2/forms", "forms", 0, &wg) // TODO: typeArray in results, without nesting
 
-	wg.Wait()
+	backupHasMore(hapikey, "https://api.hubapi.com/contacts/v1/lists", "lists", 0)
+	backupOnce(hapikey, "https://api.hubapi.com/content/api/v2/blogs", "blogs", 0)
+	backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/blog-posts", "blog-posts", 0)
+	backupLimit(hapikey, "https://api.hubapi.com/blogs/v3/blog-authors", "blog-authors", 0)
+	backupLimit(hapikey, "https://api.hubapi.com/blogs/v3/topics", "blog-topics", 0)
+	backupLimit(hapikey, "https://api.hubapi.com/comments/v3/comments", "blog-comments", 0)
+	backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/layouts", "layouts", 0)
+	backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/pages", "pages", 0)
+	backupOnce(hapikey, "https://api.hubapi.com/hubdb/api/v2/tables", "hubdb-tables", 0)
+	backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/templates", "templates", 0)
+	backupLimit(hapikey, "https://api.hubapi.com/url-mappings/v3/url-mappings", "url-mappings", 0)
+	backupHasMore(hapikey, "https://api.hubapi.com/deals/v1/deal/paged", "deals", 0)
+	backupLimit(hapikey, "https://api.hubapi.com/marketing-emails/v1/emails", "marketing-emails", 0)
+	backupOnce(hapikey, "https://api.hubapi.com/automation/v3/workflows", "workflows", 0)
+	backupHasMore(hapikey, "https://api.hubapi.com/companies/v2/companies/paged", "companies", 0)
+	backupContacts(hapikey, "https://api.hubapi.com/contacts/v1/lists/all/contacts/all", "contacts", 0)
+	// backupLimit(hapikey, "https://api.hubapi.com/forms/v2/forms", "forms", 0) // TODO: typeArray in results, without nesting
+
 	ex, err := os.Executable()
 	if err != nil {
 		panic(err)
 	}
 	exPath := filepath.Dir(ex)
 
-	switch runtime.GOOS {
-	case "windows":
-		color.Green("\033[32;1m############\nBackup saved in %v/hubspot-backup/%v\033[0m \n", exPath, time.Now().Format("2006-01-02"))
-	default:
-		fmt.Printf("\033[32;1m############\nBackup saved in %v/hubspot-backup/%v\033[0m \n", exPath, time.Now().Format("2006-01-02"))
+	if isDocker() == false {
+		switch runtime.GOOS {
+		case "windows":
+			color.Green("\033[32;1m############\nBackup saved in %v/hubspot-backup/%v\033[0m \n", exPath, time.Now().Format("2006-01-02"))
+		default:
+			fmt.Printf("\033[32;1m############\nBackup saved in %v/hubspot-backup/%v\033[0m \n", exPath, time.Now().Format("2006-01-02"))
+		}
 	}
+
 	return
 }
 
-func backupHasMore(hubspotConfig *HubspotConfig, url string, endpoint string, offset float64, wg *sync.WaitGroup) {
-	defer wg.Done()
+func backupHasMore(hapikey string, url string, endpoint string, offset float64) {
 	var error Error
 	var results map[string]interface{}
+	// Create the Bearer
+	bearerToken := "Bearer " + strings.TrimSpace(hapikey)
 
-	// get data from API
-	resp, err := executeRequest(hubspotConfig, strings.TrimSpace(url+"?count=250&offset="+strconv.Itoa(int(offset))))
+	// Create an HTTP client
+	client := &http.Client{}
+
+	// Create a request
+	req, err := http.NewRequest("GET", strings.TrimSpace(url+"?count=250&offset="+strconv.Itoa(int(offset))), nil)
+
 	if err != nil {
 		fmt.Println(err)
 	}
+
+	// Set the header
+	req.Header = http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {bearerToken},
+	}
+
+	// Send the request
+	resp, err := client.Do(req)
+
+	if err != nil {
+		fmt.Println(err)
+	}
+
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body) // body as bytes
+	body, err := io.ReadAll(resp.Body) // body as bytes
 
 	if resp.StatusCode > 299 {
 		// if error
@@ -249,8 +260,15 @@ func backupHasMore(hubspotConfig *HubspotConfig, url string, endpoint string, of
 			panic(err)
 		}
 
-		// create folder
-		folderpath := "hubspot-backup/" + time.Now().Format("2006-01-02") + "/" + endpoint
+		var folderpath string
+
+		if isDocker() == true {
+			// create folder
+			folderpath = "/hubspot-backup/" + time.Now().Format("2006-01-02") + "/" + endpoint
+		} else {
+			// create folder
+			folderpath = "hubspot-backup/" + time.Now().Format("2006-01-02") + "/" + endpoint
+		}
 		os.MkdirAll(folderpath, 0700)
 
 		// get items from response
@@ -307,8 +325,7 @@ func backupHasMore(hubspotConfig *HubspotConfig, url string, endpoint string, of
 		has_more := results["has-more"]
 		if has_more != false {
 			new_offset := results["offset"]
-			wg.Add(1)
-			go backupHasMore(hubspotConfig, url, endpoint, new_offset.(float64), wg)
+			backupHasMore(hapikey, url, endpoint, new_offset.(float64))
 		} else {
 			switch runtime.GOOS {
 			case "windows":
@@ -321,18 +338,37 @@ func backupHasMore(hubspotConfig *HubspotConfig, url string, endpoint string, of
 	return
 }
 
-func backupOnce(hubspotConfig *HubspotConfig, url string, endpoint string, offset float64, wg *sync.WaitGroup) {
-	defer wg.Done()
+func backupOnce(hapikey string, url string, endpoint string, offset float64) {
 	var error Error
 	var results map[string]interface{}
+	// Create the Bearer
+	bearerToken := "Bearer " + strings.TrimSpace(hapikey)
 
-	// get data from API
-	resp, err := executeRequest(hubspotConfig, strings.TrimSpace(url+"?count=250&offset="+strconv.Itoa(int(offset))))
+	// Create an HTTP client
+	client := &http.Client{}
+
+	// Create a request
+	req, err := http.NewRequest("GET", strings.TrimSpace(url+"?count=250&offset="+strconv.Itoa(int(offset))), nil)
+
 	if err != nil {
 		fmt.Println(err)
 	}
+
+	// Set the header
+	req.Header = http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {bearerToken},
+	}
+
+	// Send the request
+	resp, err := client.Do(req)
+
+	if err != nil {
+		fmt.Println(err)
+	}
+
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body) // body as bytes
+	body, err := io.ReadAll(resp.Body) // body as bytes
 
 	if resp.StatusCode > 299 {
 		// if error
@@ -355,8 +391,15 @@ func backupOnce(hubspotConfig *HubspotConfig, url string, endpoint string, offse
 			fmt.Printf("\r\033[33;1mBacking up %v: %v\033[0m", endpoint, int(offset))
 		}
 
-		// create folder
-		folderpath := "hubspot-backup/" + time.Now().Format("2006-01-02") + "/" + endpoint
+		var folderpath string
+
+		if isDocker() == true {
+			// create folder
+			folderpath = "/hubspot-backup/" + time.Now().Format("2006-01-02") + "/" + endpoint
+		} else {
+			// create folder
+			folderpath = "hubspot-backup/" + time.Now().Format("2006-01-02") + "/" + endpoint
+		}
 		os.MkdirAll(folderpath, 0700)
 
 		// get items from response
@@ -418,18 +461,37 @@ func backupOnce(hubspotConfig *HubspotConfig, url string, endpoint string, offse
 	return
 }
 
-func backupLimit(hubspotConfig *HubspotConfig, url string, endpoint string, offset float64, wg *sync.WaitGroup) {
-	defer wg.Done()
+func backupLimit(hapikey string, url string, endpoint string, offset float64) {
 	var error Error
 	var results map[string]interface{}
+	// Create the Bearer
+	bearerToken := "Bearer " + strings.TrimSpace(hapikey)
 
-	// get data from API
-	resp, err := executeRequest(hubspotConfig, strings.TrimSpace(url+"?count=250&offset="+strconv.Itoa(int(offset))))
+	// Create an HTTP client
+	client := &http.Client{}
+
+	// Create a request
+	req, err := http.NewRequest("GET", strings.TrimSpace(url+"?limit=250&offset="+strconv.Itoa(int(offset))), nil)
+
 	if err != nil {
 		fmt.Println(err)
 	}
+
+	// Set the header
+	req.Header = http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {bearerToken},
+	}
+
+	// Send the request
+	resp, err := client.Do(req)
+
+	if err != nil {
+		fmt.Println(err)
+	}
+
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body) // body as bytes
+	body, err := io.ReadAll(resp.Body) // body as bytes
 
 	if resp.StatusCode > 299 {
 		// if error
@@ -453,8 +515,15 @@ func backupLimit(hubspotConfig *HubspotConfig, url string, endpoint string, offs
 			fmt.Printf("\r\033[33;1mBacking up %v: %v\033[0m", endpoint, int(offset))
 		}
 
-		// create folder
-		folderpath := "hubspot-backup/" + time.Now().Format("2006-01-02") + "/" + endpoint
+		var folderpath string
+
+		if isDocker() == true {
+			// create folder
+			folderpath = "/hubspot-backup/" + time.Now().Format("2006-01-02") + "/" + endpoint
+		} else {
+			// create folder
+			folderpath = "hubspot-backup/" + time.Now().Format("2006-01-02") + "/" + endpoint
+		}
 		os.MkdirAll(folderpath, 0700)
 
 		// get items from response
@@ -517,25 +586,43 @@ func backupLimit(hubspotConfig *HubspotConfig, url string, endpoint string, offs
 				fmt.Printf("\r\033[33;1mBacking up %v: %v\033[0m", endpoint, len(typeArray)+int(offset))
 			}
 			// run again to save next batch
-			wg.Add(1)
-			go backupLimit(hubspotConfig, url, endpoint, float64(len(typeArray))+offset, wg)
+			backupLimit(hapikey, url, endpoint, float64(len(typeArray))+offset)
 		}
 	}
 	return
 }
 
-func backupContacts(hubspotConfig *HubspotConfig, url string, endpoint string, offset float64, wg *sync.WaitGroup) {
-	defer wg.Done()
+func backupContacts(hapikey string, url string, endpoint string, offset float64) {
 	var error Error
 	var results map[string]interface{}
+	// Create the Bearer
+	bearerToken := "Bearer " + strings.TrimSpace(hapikey)
 
-	// get data from API
-	resp, err := executeRequest(hubspotConfig, strings.TrimSpace(url+"?count=100&vidOffset="+strconv.Itoa(int(offset))))
+	// Create an HTTP client
+	client := &http.Client{}
+
+	// Create a request
+	req, err := http.NewRequest("GET", strings.TrimSpace(url+"?count=100&vidOffset="+strconv.Itoa(int(offset))), nil)
+
 	if err != nil {
 		fmt.Println(err)
 	}
+
+	// Set the header
+	req.Header = http.Header{
+		"Content-Type":  {"application/json"},
+		"Authorization": {bearerToken},
+	}
+
+	// Send the request
+	resp, err := client.Do(req)
+
+	if err != nil {
+		fmt.Println(err)
+	}
+
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body) // body as bytes
+	body, err := io.ReadAll(resp.Body) // body as bytes
 
 	if resp.StatusCode > 299 {
 		// if error
@@ -552,8 +639,15 @@ func backupContacts(hubspotConfig *HubspotConfig, url string, endpoint string, o
 			panic(err)
 		}
 
-		// create folder
-		folderpath := "hubspot-backup/" + time.Now().Format("2006-01-02") + "/" + endpoint
+		var folderpath string
+
+		if isDocker() == true {
+			// create folder
+			folderpath = "/hubspot-backup/" + time.Now().Format("2006-01-02") + "/" + endpoint
+		} else {
+			// create folder
+			folderpath = "hubspot-backup/" + time.Now().Format("2006-01-02") + "/" + endpoint
+		}
 		os.MkdirAll(folderpath, 0700)
 
 		// get items from response
@@ -610,8 +704,7 @@ func backupContacts(hubspotConfig *HubspotConfig, url string, endpoint string, o
 		has_more := results["has-more"]
 		if has_more != false {
 			new_offset := results["vid-offset"]
-			time.Sleep(1 * time.Second)
-			go backupContacts(hubspotConfig, url, endpoint, new_offset.(float64), wg)
+			backupContacts(hapikey, url, endpoint, new_offset.(float64))
 		} else {
 			switch runtime.GOOS {
 			case "windows":
@@ -622,4 +715,12 @@ func backupContacts(hubspotConfig *HubspotConfig, url string, endpoint string, o
 		}
 	}
 	return
+}
+
+func isDocker() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil { // check if file /.dockerenv is present
+		return true
+	} else {
+		return false
+	}
 }
