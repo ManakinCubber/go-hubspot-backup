@@ -47,7 +47,25 @@ func main() {
 	if isDocker() == false {
 		answerQuestion("Press ENTER to close.")
 	}
+	if failed {
+		os.Exit(1)
+	}
 	return
+}
+
+var failed bool
+
+// HubSpot rate limits private apps per 10s window: wait and retry instead of
+// silently dropping the rest of the endpoint.
+func doRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	for attempt := 0; ; attempt++ {
+		resp, err := client.Do(req)
+		if err != nil || resp.StatusCode != http.StatusTooManyRequests || attempt >= 10 {
+			return resp, err
+		}
+		resp.Body.Close()
+		time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+	}
 }
 
 type HubspotAccount struct {
@@ -117,7 +135,7 @@ func getAccountInfo(hapikey string) bool {
 	}
 
 	// Send the request
-	resp, err := client.Do(req)
+	resp, err := doRequest(client, req)
 
 	if err != nil {
 		fmt.Println(err)
@@ -189,7 +207,6 @@ func startBackup(hapikey string) {
 	backupLimit(hapikey, "https://api.hubapi.com/content/api/v2/templates", "templates", 0)
 	backupLimit(hapikey, "https://api.hubapi.com/url-mappings/v3/url-mappings", "url-mappings", 0)
 	backupHasMore(hapikey, "https://api.hubapi.com/deals/v1/deal/paged", "deals", 0)
-	backupLimit(hapikey, "https://api.hubapi.com/marketing-emails/v1/emails", "marketing-emails", 0)
 	backupOnce(hapikey, "https://api.hubapi.com/automation/v3/workflows", "workflows", 0)
 	backupHasMore(hapikey, "https://api.hubapi.com/companies/v2/companies/paged", "companies", 0)
 	backupContacts(hapikey, "https://api.hubapi.com/contacts/v1/lists/all/contacts/all", "contacts", 0)
@@ -236,7 +253,7 @@ func backupHasMore(hapikey string, url string, endpoint string, offset float64) 
 	}
 
 	// Send the request
-	resp, err := client.Do(req)
+	resp, err := doRequest(client, req)
 
 	if err != nil {
 		fmt.Println(err)
@@ -247,9 +264,10 @@ func backupHasMore(hapikey string, url string, endpoint string, offset float64) 
 
 	if resp.StatusCode > 299 {
 		// if error
-		fmt.Printf("\033[31;1mError: %v %v \033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode))
+		fmt.Printf("\033[31;1mError: %v %v on %v\033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode), endpoint)
 		err = json.Unmarshal(body, &error)
 		fmt.Println(error.Message)
+		failed = true
 
 		return
 	} else {
@@ -361,7 +379,7 @@ func backupOnce(hapikey string, url string, endpoint string, offset float64) {
 	}
 
 	// Send the request
-	resp, err := client.Do(req)
+	resp, err := doRequest(client, req)
 
 	if err != nil {
 		fmt.Println(err)
@@ -372,9 +390,10 @@ func backupOnce(hapikey string, url string, endpoint string, offset float64) {
 
 	if resp.StatusCode > 299 {
 		// if error
-		fmt.Printf("\033[31;1mError: %v %v \033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode))
+		fmt.Printf("\033[31;1mError: %v %v on %v\033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode), endpoint)
 		err = json.Unmarshal(body, &error)
 		fmt.Println(error.Message)
+		failed = true
 
 		return
 	} else {
@@ -484,7 +503,7 @@ func backupLimit(hapikey string, url string, endpoint string, offset float64) {
 	}
 
 	// Send the request
-	resp, err := client.Do(req)
+	resp, err := doRequest(client, req)
 
 	if err != nil {
 		fmt.Println(err)
@@ -495,9 +514,10 @@ func backupLimit(hapikey string, url string, endpoint string, offset float64) {
 
 	if resp.StatusCode > 299 {
 		// if error
-		fmt.Printf("\033[31;1mError: %v %v \033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode))
+		fmt.Printf("\033[31;1mError: %v %v on %v\033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode), endpoint)
 		err = json.Unmarshal(body, &error)
 		fmt.Println(error.Message)
+		failed = true
 
 		return
 	} else {
@@ -615,7 +635,7 @@ func backupContacts(hapikey string, url string, endpoint string, offset float64)
 	}
 
 	// Send the request
-	resp, err := client.Do(req)
+	resp, err := doRequest(client, req)
 
 	if err != nil {
 		fmt.Println(err)
@@ -626,9 +646,10 @@ func backupContacts(hapikey string, url string, endpoint string, offset float64)
 
 	if resp.StatusCode > 299 {
 		// if error
-		fmt.Printf("\033[31;1mError: %v %v \033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode))
+		fmt.Printf("\033[31;1mError: %v %v on %v\033[0m\n", resp.StatusCode, http.StatusText(resp.StatusCode), endpoint)
 		err = json.Unmarshal(body, &error)
 		fmt.Println(error.Message)
+		failed = true
 
 		return
 	} else {
@@ -718,6 +739,10 @@ func backupContacts(hapikey string, url string, endpoint string, offset float64)
 }
 
 func isDocker() bool {
+	// Containerd (Kubernetes) does not create /.dockerenv.
+	if os.Getenv("HUBSPOT_BACKUP_UNATTENDED") != "" {
+		return true
+	}
 	if _, err := os.Stat("/.dockerenv"); err == nil { // check if file /.dockerenv is present
 		return true
 	} else {
