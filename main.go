@@ -316,29 +316,7 @@ func backupHasMore(hapikey string, url string, endpoint string, offset float64) 
 			fmt.Printf("\r\033[33;1mBacking up %v: %v\033[0m", endpoint, len(typeArray)+int(offset))
 		}
 
-		// for each item
-		for k, v := range typeArray {
-			itemnumber := k + int(offset)
-			filepath := string(folderpath + "/" + strconv.Itoa(itemnumber) + ".json")
-			// create file
-			file, err := os.Create(filepath)
-			if err != nil {
-				fmt.Println("failed creating file: %s", err)
-			}
-			// create json
-			json, err := json.Marshal(v)
-			if err != nil {
-				fmt.Println(err)
-			}
-			// write json to file
-			file.WriteString(string(json[:]))
-
-			if err != nil {
-				fmt.Println("failed writing to file: %s", err)
-			}
-			file.Close()
-		}
-
+		writePage(folderpath, offset, typeArray)
 		// rerun function if there are more results
 		has_more := results["has-more"]
 		if has_more != false {
@@ -447,29 +425,7 @@ func backupOnce(hapikey string, url string, endpoint string, offset float64) {
 			fmt.Printf("\r\033[33;1mBacking up %v: %v\033[0m", endpoint, len(typeArray)+int(offset))
 		}
 
-		// for each item
-		for k, v := range typeArray {
-			itemnumber := k + int(offset)
-			filepath := string(folderpath + "/" + strconv.Itoa(itemnumber) + ".json")
-			// create file
-			file, err := os.Create(filepath)
-			if err != nil {
-				fmt.Println("failed creating file: %s", err)
-			}
-			// create json
-			json, err := json.Marshal(v)
-			if err != nil {
-				fmt.Println(err)
-			}
-			// write json to file
-			file.WriteString(string(json[:]))
-
-			if err != nil {
-				fmt.Println("failed writing to file: %s", err)
-			}
-			file.Close()
-		}
-
+		writePage(folderpath, offset, typeArray)
 		switch runtime.GOOS {
 		case "windows":
 			color.Green("\n\033[32;1mBacked up all %v \033[0m\n", endpoint)
@@ -566,29 +522,7 @@ func backupLimit(hapikey string, url string, endpoint string, offset float64) {
 			return
 		}
 
-		// for each item
-		for k, v := range typeArray {
-			itemnumber := k + int(offset)
-			filepath := string(folderpath + "/" + strconv.Itoa(itemnumber) + ".json")
-			// create file
-			file, err := os.Create(filepath)
-			if err != nil {
-				fmt.Println("failed creating file: %s", err)
-			}
-			// create json
-			json, err := json.Marshal(v)
-			if err != nil {
-				fmt.Println(err)
-			}
-			// write json to file
-			file.WriteString(string(json[:]))
-
-			if err != nil {
-				fmt.Println("failed writing to file: %s", err)
-			}
-			file.Close()
-		}
-
+		writePage(folderpath, offset, typeArray)
 		if len(typeArray) == 0 {
 			// finish if went through all records
 			switch runtime.GOOS {
@@ -698,29 +632,7 @@ func backupContacts(hapikey string, url string, endpoint string, offset float64)
 			fmt.Printf("\r\033[33;1mBacking up %v: %v\033[0m", endpoint, len(typeArray)+int(offset))
 		}
 
-		// for each item
-		for k, v := range typeArray {
-			itemnumber := k + int(offset)
-			filepath := string(folderpath + "/" + strconv.Itoa(itemnumber) + ".json")
-			// create file
-			file, err := os.Create(filepath)
-			if err != nil {
-				fmt.Println("failed creating file: %s", err)
-			}
-			// create json
-			json, err := json.Marshal(v)
-			if err != nil {
-				fmt.Println(err)
-			}
-			// write json to file
-			file.WriteString(string(json[:]))
-
-			if err != nil {
-				fmt.Println("failed writing to file: %s", err)
-			}
-			file.Close()
-		}
-
+		writePage(folderpath, offset, typeArray)
 		// rerun function if there are more results
 		has_more := results["has-more"]
 		if has_more != false {
@@ -737,6 +649,21 @@ func backupContacts(hapikey string, url string, endpoint string, offset float64)
 		}
 	}
 	return
+}
+
+// One file per page rather than per item: hundreds of thousands of small files exhaust the container memory (kernel inode cache).
+func writePage(folderpath string, offset float64, items []interface{}) {
+	data, err := json.Marshal(items)
+	if err != nil {
+		fmt.Println(err)
+		failed = true
+		return
+	}
+	filepath := folderpath + "/" + strconv.Itoa(int(offset)) + ".json"
+	if err := os.WriteFile(filepath, data, 0600); err != nil {
+		fmt.Printf("failed writing to file: %s\n", err)
+		failed = true
+	}
 }
 
 func isDocker() bool {
