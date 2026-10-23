@@ -259,8 +259,9 @@ func backupHasMore(hapikey string, url string, endpoint string, offset float64) 
 		fmt.Println(err)
 	}
 
-	defer resp.Body.Close()
+	// Pagination recurses once per page: a deferred Close keeps every response open until the whole endpoint is done.
 	body, err := io.ReadAll(resp.Body) // body as bytes
+	resp.Body.Close()
 
 	if resp.StatusCode > 299 {
 		// if error
@@ -363,8 +364,8 @@ func backupOnce(hapikey string, url string, endpoint string, offset float64) {
 		fmt.Println(err)
 	}
 
-	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body) // body as bytes
+	resp.Body.Close()
 
 	if resp.StatusCode > 299 {
 		// if error
@@ -465,8 +466,8 @@ func backupLimit(hapikey string, url string, endpoint string, offset float64) {
 		fmt.Println(err)
 	}
 
-	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body) // body as bytes
+	resp.Body.Close()
 
 	if resp.StatusCode > 299 {
 		// if error
@@ -575,8 +576,8 @@ func backupContacts(hapikey string, url string, endpoint string, offset float64)
 		fmt.Println(err)
 	}
 
-	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body) // body as bytes
+	resp.Body.Close()
 
 	if resp.StatusCode > 299 {
 		// if error
