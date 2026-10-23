@@ -64,6 +64,7 @@ func doRequest(client *http.Client, req *http.Request) (*http.Response, error) {
 			return resp, err
 		}
 		resp.Body.Close()
+		fmt.Printf("\nRate limited (429) on %v, retry %d/10\n", req.URL.Path, attempt+1)
 		time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
 	}
 }
@@ -230,7 +231,14 @@ func startBackup(hapikey string) {
 	return
 }
 
+// Iterate rather than recurse: each recursive call kept its page alive until the end of the endpoint.
 func backupHasMore(hapikey string, url string, endpoint string, offset float64) {
+	for more := true; more; {
+		offset, more = backupHasMorePage(hapikey, url, endpoint, offset)
+	}
+}
+
+func backupHasMorePage(hapikey string, url string, endpoint string, offset float64) (float64, bool) {
 	var error Error
 	var results map[string]interface{}
 	// Create the Bearer
@@ -259,8 +267,9 @@ func backupHasMore(hapikey string, url string, endpoint string, offset float64) 
 		fmt.Println(err)
 	}
 
-	defer resp.Body.Close()
+	// Pagination recurses once per page: a deferred Close keeps every response open until the whole endpoint is done.
 	body, err := io.ReadAll(resp.Body) // body as bytes
+	resp.Body.Close()
 
 	if resp.StatusCode > 299 {
 		// if error
@@ -269,7 +278,7 @@ func backupHasMore(hapikey string, url string, endpoint string, offset float64) 
 		fmt.Println(error.Message)
 		failed = true
 
-		return
+		return 0, false
 	} else {
 		// continue
 		err = json.Unmarshal(body, &results) // put json body response into map of strings to empty interfaces
@@ -306,7 +315,7 @@ func backupHasMore(hapikey string, url string, endpoint string, offset float64) 
 			default:
 				fmt.Printf("\n\033[32;1mBacked up all %v \033[0m\n", endpoint)
 			}
-			return
+			return 0, false
 		}
 
 		switch runtime.GOOS {
@@ -321,7 +330,7 @@ func backupHasMore(hapikey string, url string, endpoint string, offset float64) 
 		has_more := results["has-more"]
 		if has_more != false {
 			new_offset := results["offset"]
-			backupHasMore(hapikey, url, endpoint, new_offset.(float64))
+			return new_offset.(float64), true
 		} else {
 			switch runtime.GOOS {
 			case "windows":
@@ -331,7 +340,7 @@ func backupHasMore(hapikey string, url string, endpoint string, offset float64) 
 			}
 		}
 	}
-	return
+	return 0, false
 }
 
 func backupOnce(hapikey string, url string, endpoint string, offset float64) {
@@ -363,8 +372,8 @@ func backupOnce(hapikey string, url string, endpoint string, offset float64) {
 		fmt.Println(err)
 	}
 
-	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body) // body as bytes
+	resp.Body.Close()
 
 	if resp.StatusCode > 299 {
 		// if error
@@ -437,6 +446,12 @@ func backupOnce(hapikey string, url string, endpoint string, offset float64) {
 }
 
 func backupLimit(hapikey string, url string, endpoint string, offset float64) {
+	for more := true; more; {
+		offset, more = backupLimitPage(hapikey, url, endpoint, offset)
+	}
+}
+
+func backupLimitPage(hapikey string, url string, endpoint string, offset float64) (float64, bool) {
 	var error Error
 	var results map[string]interface{}
 	// Create the Bearer
@@ -465,8 +480,8 @@ func backupLimit(hapikey string, url string, endpoint string, offset float64) {
 		fmt.Println(err)
 	}
 
-	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body) // body as bytes
+	resp.Body.Close()
 
 	if resp.StatusCode > 299 {
 		// if error
@@ -475,7 +490,7 @@ func backupLimit(hapikey string, url string, endpoint string, offset float64) {
 		fmt.Println(error.Message)
 		failed = true
 
-		return
+		return 0, false
 	} else {
 		// continue
 		err = json.Unmarshal(body, &results) // put json body response into map of strings to empty interfaces
@@ -519,7 +534,7 @@ func backupLimit(hapikey string, url string, endpoint string, offset float64) {
 			default:
 				fmt.Printf("\n\033[32;1mBacked up all %v \033[0m\n", endpoint)
 			}
-			return
+			return 0, false
 		}
 
 		writePage(folderpath, offset, typeArray)
@@ -531,7 +546,7 @@ func backupLimit(hapikey string, url string, endpoint string, offset float64) {
 			default:
 				fmt.Printf("\n\033[32;1mBacked up all %v \033[0m\n", endpoint)
 			}
-			return
+			return 0, false
 		} else {
 			switch runtime.GOOS {
 			case "windows":
@@ -540,13 +555,19 @@ func backupLimit(hapikey string, url string, endpoint string, offset float64) {
 				fmt.Printf("\r\033[33;1mBacking up %v: %v\033[0m", endpoint, len(typeArray)+int(offset))
 			}
 			// run again to save next batch
-			backupLimit(hapikey, url, endpoint, float64(len(typeArray))+offset)
+			return float64(len(typeArray)) + offset, true
 		}
 	}
-	return
+	return 0, false
 }
 
 func backupContacts(hapikey string, url string, endpoint string, offset float64) {
+	for more := true; more; {
+		offset, more = backupContactsPage(hapikey, url, endpoint, offset)
+	}
+}
+
+func backupContactsPage(hapikey string, url string, endpoint string, offset float64) (float64, bool) {
 	var error Error
 	var results map[string]interface{}
 	// Create the Bearer
@@ -575,8 +596,8 @@ func backupContacts(hapikey string, url string, endpoint string, offset float64)
 		fmt.Println(err)
 	}
 
-	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body) // body as bytes
+	resp.Body.Close()
 
 	if resp.StatusCode > 299 {
 		// if error
@@ -585,7 +606,7 @@ func backupContacts(hapikey string, url string, endpoint string, offset float64)
 		fmt.Println(error.Message)
 		failed = true
 
-		return
+		return 0, false
 	} else {
 		// continue
 		err = json.Unmarshal(body, &results) // put json body response into map of strings to empty interfaces
@@ -622,7 +643,7 @@ func backupContacts(hapikey string, url string, endpoint string, offset float64)
 			default:
 				fmt.Printf("\n\033[32;1mBacked up all %v \033[0m\n", endpoint)
 			}
-			return
+			return 0, false
 		}
 
 		switch runtime.GOOS {
@@ -637,8 +658,7 @@ func backupContacts(hapikey string, url string, endpoint string, offset float64)
 		has_more := results["has-more"]
 		if has_more != false {
 			new_offset := results["vid-offset"]
-			time.Sleep(1 * time.Second)
-			backupContacts(hapikey, url, endpoint, new_offset.(float64))
+			return new_offset.(float64), true
 		} else {
 			switch runtime.GOOS {
 			case "windows":
@@ -648,7 +668,7 @@ func backupContacts(hapikey string, url string, endpoint string, offset float64)
 			}
 		}
 	}
-	return
+	return 0, false
 }
 
 // One file per page rather than per item: hundreds of thousands of small files exhaust the container memory (kernel inode cache).
