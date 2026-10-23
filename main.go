@@ -64,6 +64,7 @@ func doRequest(client *http.Client, req *http.Request) (*http.Response, error) {
 			return resp, err
 		}
 		resp.Body.Close()
+		fmt.Printf("\nRate limited (429) on %v, retry %d/10\n", req.URL.Path, attempt+1)
 		time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
 	}
 }
@@ -657,7 +658,6 @@ func backupContactsPage(hapikey string, url string, endpoint string, offset floa
 		has_more := results["has-more"]
 		if has_more != false {
 			new_offset := results["vid-offset"]
-			time.Sleep(1 * time.Second)
 			return new_offset.(float64), true
 		} else {
 			switch runtime.GOOS {
